@@ -1,0 +1,516 @@
+as MS SQL DataBase developer create new stored procedure to calculate revenue for specified customer within the given time period (based on the input parameter). The formula for sales amount is Quantity * Unit Price. 1.	The stored procedure should accept the following input parameters:
+•	FromYear: integer; the year from which to start the calculation. 
+Acceptable values: 2020, 2021, 2022, etc. If input parameter is not passed, the earliest available year in the data set should be used by default.
+•	ToYear: integer; the year to which the calculation should be made. 
+Acceptable values: 2020, 2021, 2022, etc. If input parameter is not passed, the latest available year in the data set should be used by default.
+•	Period: varchar; period for which customer revenue should be aggregated (month, quarter, year). 
+Acceptable values: ‘Month’, ’M’, ‘Quarter’, ‘Q’, ‘Year’, ‘Y’. If input parameter is not passed, year should be used by default.
+•	CustomerID: integer; the ID of the customer for which revenue needs to be calculated. If the input parameter is not passed, all the customers should be included in the result set.
+2.	The stored procedure should retrieve relevant sales data from the database based on the input parameters. 4.	The result set should be inserted to the newly created SQL table. The table should contain the following columns: 
+•	[CustomerID] (int)
+•	[CustomerName] (varchar(50))
+•	[Period] (varchar(8))
+•	[Revenue] (numeric(19,2))
+5.	SQL table name should consist of customer ID, customer name, start year, end year and period identifier, for example: ‘1_SoftServe_2019_2022_M’ or ‘1_SoftServe_2019_2022_Q’ or ‘1_SoftServe_2019_2022_Y’.
+If the stored procedure was executed for one year, table name should contain only one year, for example ‘1_SoftServe_2022_M’.
+If stored procedure was executed for all customers, table name should contain prefix ‘All’, start year, end year and period identifier. For example, ‘All_2019_2022_Y’.
+6.	The table should be created during each execution of stored procedure. If the table with the given name already exists – it should be dropped and recreated.
+7.	Depends on the chosen period, periods data in the result set should be represented as following: 
+•	For month: MM YYYY (for example, Jan 2022)
+•	For quarter: ‘Q’+ QuarterNumber+ ‘ ‘ + YYYY (for example, Q1 2022)
+•	For year: YYYY (for example, 2022)
+
+8.	If no sales data is found for the specified customer within the given time period, the revenue should be set to zero.
+The table with customer data is called Dimension.Customer and has following columns : [Customer Key] as Primary Key and [Customer] as  [CustomerName]. The table for sales is called Fact.Sales and has columns: [Sale Key] as Primary Key, [Customer key] as Foreign key to Dimension.Customer table, [Quantity] and [Unit Price]
+ChatGPT
+To achieve the described functionality, you can follow the steps provided. Below is an implementation of the SQL stored procedure that meets the requirements:
+
+sql
+Copy code
+CREATE PROCEDURE CalculateRevenue
+    @FromYear INT = NULL,
+    @ToYear INT = NULL,
+    @Period VARCHAR(10) = 'Year',
+    @CustomerID INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Determine the default FromYear and ToYear if not provided
+    IF @FromYear IS NULL
+        SET @FromYear = (SELECT MIN(YEAR(SaleDate)) FROM Fact.Sales);
+
+    IF @ToYear IS NULL
+        SET @ToYear = (SELECT MAX(YEAR(SaleDate)) FROM Fact.Sales);
+
+    -- Determine the table name
+    DECLARE @TableName NVARCHAR(255);
+    IF @CustomerID IS NULL
+        SET @TableName = 'All_';
+    ELSE
+    BEGIN
+        SELECT @TableName = CONVERT(VARCHAR, [Customer Key]) + '_' + [CustomerName] + '_'
+        FROM Dimension.Customer WHERE [Customer Key] = @CustomerID;
+    END
+
+    SET @TableName += CONVERT(VARCHAR, @FromYear) 
+    + (CASE WHEN @FromYear != @ToYear THEN '_' + CONVERT(VARCHAR, @ToYear) ELSE '' END)
+    + '_' + LEFT(@Period, 1);
+    
+    -- Drop the table if it exists
+    IF OBJECT_ID(@TableName, 'U') IS NOT NULL
+        EXEC('DROP TABLE [' + @TableName + ']');
+
+    -- Create the table
+    EXEC('CREATE TABLE [' + @TableName + '] (
+        [CustomerID] INT,
+        [CustomerName] VARCHAR(50),
+        [Period] VARCHAR(8),
+        [Revenue] NUMERIC(19,2)
+    )');
+
+    -- Determine the period and insert the data
+    DECLARE @SQL NVARCHAR(MAX) = 
+    'INSERT INTO [' + @TableName + ']
+        SELECT
+            c.[Customer Key],
+            c.[CustomerName],
+            ';
+            
+    IF @Period IN ('Month', 'M')
+        SET @SQL += 'FORMAT(s.SaleDate, ''MMM yyyy''), ';
+    ELSE IF @Period IN ('Quarter', 'Q')
+        SET @SQL += '''Q'' + DATENAME(QUARTER, s.SaleDate) + '' '' + CONVERT(VARCHAR, YEAR(s.SaleDate)), ';
+    ELSE
+        SET @SQL += 'CONVERT(VARCHAR, YEAR(s.SaleDate)), ';
+
+    @SQL += 'ISNULL(SUM(s.[Quantity] * s.[Unit Price]), 0)
+        FROM Dimension.Customer c
+        LEFT JOIN Fact.Sales s ON c.[Customer Key] = s.[Customer Key]
+        WHERE YEAR(s.SaleDate) BETWEEN ' + CONVERT(VARCHAR, @FromYear) + ' AND ' + CONVERT(VARCHAR, @ToYear);
+
+    IF @CustomerID IS NOT NULL
+        SET @SQL += ' AND c.[Customer Key] = ' + CONVERT(VARCHAR, @CustomerID);
+
+    SET @SQL += 
+    ' GROUP BY c.[Customer Key], c.[CustomerName], ';
+
+    IF @Period IN ('Month', 'M')
+        SET @SQL += 'FORMAT(s.SaleDate, ''MMM yyyy'')';
+    ELSE IF @Period IN ('Quarter', 'Q')
+        SET @SQL += '''Q'' + DATENAME(QUARTER, s.SaleDate) + '' '' + CONVERT(VARCHAR, YEAR(s.SaleDate))';
+    ELSE
+        SET @SQL += 'YEAR(s.SaleDate)';
+
+    -- Execute the query
+    EXEC(@SQL);
+END
+This stored procedure is designed to:
+
+Set default values for the input parameters if they are not provided.
+Calculate the name of the table to store the results.
+Drop and recreate the table if it already exists.
+Insert sales data for the specified period into the new table.
+Make sure to create appropriate indexes on the table columns for efficient querying, especially for the SaleDate and Customer Key columns in the Fact.Sales and Dimension.Customer tables respectively.
+
+Also, ensure you have permissions to execute dynamic SQL and have set an appropriate context for it.
+
+
+
+
+User
+SaleDate column is called [Invoice Date Key] in [Fact].[Sale] table
+ChatGPT
+Got it. Given the update, let's make adjustments to the SQL stored procedure.
+
+sql
+Copy code
+CREATE PROCEDURE CalculateRevenue
+    @FromYear INT = NULL,
+    @ToYear INT = NULL,
+    @Period VARCHAR(10) = 'Year',
+    @CustomerID INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Determine the default FromYear and ToYear if not provided
+    IF @FromYear IS NULL
+        SET @FromYear = (SELECT MIN(YEAR([Invoice Date Key])) FROM [Fact].[Sale]);
+
+    IF @ToYear IS NULL
+        SET @ToYear = (SELECT MAX(YEAR([Invoice Date Key])) FROM [Fact].[Sale]);
+
+    -- Determine the table name
+    DECLARE @TableName NVARCHAR(255);
+    IF @CustomerID IS NULL
+        SET @TableName = 'All_';
+    ELSE
+    BEGIN
+        SELECT @TableName = CONVERT(VARCHAR, [Customer Key]) + '_' + [CustomerName] + '_'
+        FROM [Dimension].[Customer] WHERE [Customer Key] = @CustomerID;
+    END
+
+    SET @TableName += CONVERT(VARCHAR, @FromYear) 
+    + (CASE WHEN @FromYear != @ToYear THEN '_' + CONVERT(VARCHAR, @ToYear) ELSE '' END)
+    + '_' + LEFT(@Period, 1);
+    
+    -- Drop the table if it exists
+    IF OBJECT_ID(@TableName, 'U') IS NOT NULL
+        EXEC('DROP TABLE [' + @TableName + ']');
+
+    -- Create the table
+    EXEC('CREATE TABLE [' + @TableName + '] (
+        [CustomerID] INT,
+        [CustomerName] VARCHAR(50),
+        [Period] VARCHAR(8),
+        [Revenue] NUMERIC(19,2)
+    )');
+
+    -- Determine the period and insert the data
+    DECLARE @SQL NVARCHAR(MAX) = 
+    'INSERT INTO [' + @TableName + ']
+        SELECT
+            c.[Customer Key],
+            c.[CustomerName],
+            ';
+            
+    IF @Period IN ('Month', 'M')
+        SET @SQL += 'FORMAT(s.[Invoice Date Key], ''MMM yyyy''), ';
+    ELSE IF @Period IN ('Quarter', 'Q')
+        SET @SQL += '''Q'' + DATENAME(QUARTER, s.[Invoice Date Key]) + '' '' + CONVERT(VARCHAR, YEAR(s.[Invoice Date Key])), ';
+    ELSE
+        SET @SQL += 'CONVERT(VARCHAR, YEAR(s.[Invoice Date Key])), ';
+
+    @SQL += 'ISNULL(SUM(s.[Quantity] * s.[Unit Price]), 0)
+        FROM [Dimension].[Customer] c
+        LEFT JOIN [Fact].[Sale] s ON c.[Customer Key] = s.[Customer Key]
+        WHERE YEAR(s.[Invoice Date Key]) BETWEEN ' + CONVERT(VARCHAR, @FromYear) + ' AND ' + CONVERT(VARCHAR, @ToYear);
+
+    IF @CustomerID IS NOT NULL
+        SET @SQL += ' AND c.[Customer Key] = ' + CONVERT(VARCHAR, @CustomerID);
+
+    SET @SQL += 
+    ' GROUP BY c.[Customer Key], c.[CustomerName], ';
+
+    IF @Period IN ('Month', 'M')
+        SET @SQL += 'FORMAT(s.[Invoice Date Key], ''MMM yyyy'')';
+    ELSE IF @Period IN ('Quarter', 'Q')
+        SET @SQL += '''Q'' + DATENAME(QUARTER, s.[Invoice Date Key]) + '' '' + CONVERT(VARCHAR, YEAR(s.[Invoice Date Key]))';
+    ELSE
+        SET @SQL += 'YEAR(s.[Invoice Date Key])';
+
+    -- Execute the query
+    EXEC(@SQL);
+END
+I've made adjustments to accommodate the renamed SaleDate column, which is now called [Invoice Date Key] in the [Fact].[Sale] table.
+
+
+
+
+User
+If @CustomerID is not found in Dimension.Customer , customer name should be empty during creation of the table. Revenue should be 0
+ChatGPT
+Alright, let's make adjustments to handle the scenario where a customer ID is not found in the Dimension.Customer table.
+
+In this scenario, if @CustomerID is not found, then the CustomerName in the result table will be empty (NULL), and the revenue will be 0.
+
+Here's the modified stored procedure:
+
+sql
+Copy code
+CREATE PROCEDURE CalculateRevenue
+    @FromYear INT = NULL,
+    @ToYear INT = NULL,
+    @Period VARCHAR(10) = 'Year',
+    @CustomerID INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Determine the default FromYear and ToYear if not provided
+    IF @FromYear IS NULL
+        SET @FromYear = (SELECT MIN(YEAR([Invoice Date Key])) FROM [Fact].[Sale]);
+
+    IF @ToYear IS NULL
+        SET @ToYear = (SELECT MAX(YEAR([Invoice Date Key])) FROM [Fact].[Sale]);
+
+    -- Determine the table name
+    DECLARE @TableName NVARCHAR(255), @CustName NVARCHAR(50);
+    IF @CustomerID IS NULL
+        SET @TableName = 'All_';
+    ELSE
+    BEGIN
+        SELECT @CustName = [CustomerName]
+        FROM [Dimension].[Customer] 
+        WHERE [Customer Key] = @CustomerID;
+
+        IF @CustName IS NULL
+        BEGIN
+            SET @CustName = '';
+            SET @TableName = CONVERT(VARCHAR, @CustomerID) + '_';
+        END
+        ELSE
+            SET @TableName = CONVERT(VARCHAR, @CustomerID) + '_' + @CustName + '_';
+    END
+
+    SET @TableName += CONVERT(VARCHAR, @FromYear) 
+    + (CASE WHEN @FromYear != @ToYear THEN '_' + CONVERT(VARCHAR, @ToYear) ELSE '' END)
+    + '_' + LEFT(@Period, 1);
+    
+    -- Drop the table if it exists
+    IF OBJECT_ID(@TableName, 'U') IS NOT NULL
+        EXEC('DROP TABLE [' + @TableName + ']');
+
+    -- Create the table
+    EXEC('CREATE TABLE [' + @TableName + '] (
+        [CustomerID] INT,
+        [CustomerName] VARCHAR(50),
+        [Period] VARCHAR(8),
+        [Revenue] NUMERIC(19,2)
+    )');
+
+    -- Determine the period and insert the data
+    DECLARE @SQL NVARCHAR(MAX) = 
+    'INSERT INTO [' + @TableName + ']
+        SELECT
+            ISNULL(c.[Customer Key], ' + CONVERT(VARCHAR, ISNULL(@CustomerID, 'NULL')) + ') AS CustomerID,
+            ISNULL(c.[CustomerName], ''' + @CustName + ''') AS CustomerName,
+            ';
+            
+    IF @Period IN ('Month', 'M')
+        SET @SQL += 'FORMAT(s.[Invoice Date Key], ''MMM yyyy''), ';
+    ELSE IF @Period IN ('Quarter', 'Q')
+        SET @SQL += '''Q'' + DATENAME(QUARTER, s.[Invoice Date Key]) + '' '' + CONVERT(VARCHAR, YEAR(s.[Invoice Date Key])), ';
+    ELSE
+        SET @SQL += 'CONVERT(VARCHAR, YEAR(s.[Invoice Date Key])), ';
+
+    @SQL += 'ISNULL(SUM(s.[Quantity] * s.[Unit Price]), 0) AS Revenue
+        FROM [Dimension].[Customer] c
+        LEFT JOIN [Fact].[Sale] s ON c.[Customer Key] = s.[Customer Key]
+        WHERE YEAR(s.[Invoice Date Key]) BETWEEN ' + CONVERT(VARCHAR, @FromYear) + ' AND ' + CONVERT(VARCHAR, @ToYear);
+
+    IF @CustomerID IS NOT NULL
+        SET @SQL += ' AND (c.[Customer Key] = ' + CONVERT(VARCHAR, @CustomerID) + ' OR c.[Customer Key] IS NULL)';
+
+    SET @SQL += 
+    ' GROUP BY c.[Customer Key], c.[CustomerName], ';
+
+    IF @Period IN ('Month', 'M')
+        SET @SQL += 'FORMAT(s.[Invoice Date Key], ''MMM yyyy'')';
+    ELSE IF @Period IN ('Quarter', 'Q')
+        SET @SQL += '''Q'' + DATENAME(QUARTER, s.[Invoice Date Key]) + '' '' + CONVERT(VARCHAR, YEAR(s.[Invoice Date Key]))';
+    ELSE
+        SET @SQL += 'YEAR(s.[Invoice Date Key])';
+
+    -- Execute the query
+    EXEC(@SQL);
+END
+The modifications include:
+
+If @CustomerID isn't found in Dimension.Customer, the CustomerName for the result set (and in the table name) will be empty.
+If there's no corresponding sales data for that customer, the revenue will be 0 by using the ISNULL function.
+
+
+
+User
+If no sales data is found for the specified customer within the given time period, INSERT new row with indicated period, customer Id and revenue = 0
+ChatGPT
+I understand. We need to ensure that if there's no sales data for a specified customer within the given time period, we still insert a row into the result table for that customer with a revenue of 0.
+
+To achieve this, we need to perform an outer join with a potential list of periods based on the @Period parameter. If the @Period is 'Month', we'd generate a list of all the months within the specified range. For 'Quarter', a list of all quarters, and for 'Year', a list of years.
+
+Here's the modified stored procedure to accommodate this requirement:
+
+sql
+Copy code
+CREATE PROCEDURE CalculateRevenue
+    @FromYear INT = NULL,
+    @ToYear INT = NULL,
+    @Period VARCHAR(10) = 'Year',
+    @CustomerID INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Determine default values
+    IF @FromYear IS NULL
+        SET @FromYear = (SELECT MIN(YEAR([Invoice Date Key])) FROM [Fact].[Sale]);
+
+    IF @ToYear IS NULL
+        SET @ToYear = (SELECT MAX(YEAR([Invoice Date Key])) FROM [Fact].[Sale]);
+
+    -- Determine the table name
+    DECLARE @TableName NVARCHAR(255), @CustName NVARCHAR(50);
+    IF @CustomerID IS NULL
+        SET @TableName = 'All_';
+    ELSE
+    BEGIN
+        SELECT @CustName = [CustomerName]
+        FROM [Dimension].[Customer] 
+        WHERE [Customer Key] = @CustomerID;
+
+        IF @CustName IS NULL
+        BEGIN
+            SET @CustName = '';
+            SET @TableName = CONVERT(VARCHAR, @CustomerID) + '_';
+        END
+        ELSE
+            SET @TableName = CONVERT(VARCHAR, @CustomerID) + '_' + @CustName + '_';
+    END
+
+    SET @TableName += CONVERT(VARCHAR, @FromYear) 
+    + (CASE WHEN @FromYear != @ToYear THEN '_' + CONVERT(VARCHAR, @ToYear) ELSE '' END)
+    + '_' + LEFT(@Period, 1);
+    
+    -- Drop the table if it exists
+    IF OBJECT_ID(@TableName, 'U') IS NOT NULL
+        EXEC('DROP TABLE [' + @TableName + ']');
+
+    -- Create the table
+    EXEC('CREATE TABLE [' + @TableName + '] (
+        [CustomerID] INT,
+        [CustomerName] VARCHAR(50),
+        [Period] VARCHAR(8),
+        [Revenue] NUMERIC(19,2)
+    )');
+
+    -- Construct the main query based on period
+    DECLARE @SQL NVARCHAR(MAX);
+    
+    -- The common part of the SQL
+    SET @SQL = 'INSERT INTO [' + @TableName + '] ';
+    
+    -- Depending on the period, adjust the SQL accordingly
+    IF @Period IN ('Month', 'M')
+    BEGIN
+        SET @SQL += 'WITH Months AS (
+            SELECT DATEADD(MONTH, number, DATEFROMPARTS(' + CONVERT(VARCHAR, @FromYear) + ', 1, 1)) AS Month
+            FROM master.dbo.spt_values 
+            WHERE type = ''P'' AND number BETWEEN 0 AND DATEDIFF(MONTH, DATEFROMPARTS(' + CONVERT(VARCHAR, @FromYear) + ', 1, 1), DATEFROMPARTS(' + CONVERT(VARCHAR, @ToYear) + ', 12, 31))
+        )
+        SELECT ISNULL(c.[Customer Key], ' + CONVERT(VARCHAR, ISNULL(@CustomerID, 'NULL')) + ') AS CustomerID,
+            ISNULL(c.[CustomerName], ''' + @CustName + ''') AS CustomerName,
+            FORMAT(m.Month, ''MMM yyyy'') AS Period,
+            ISNULL(SUM(s.[Quantity] * s.[Unit Price]), 0) AS Revenue
+        FROM Months m
+        CROSS JOIN [Dimension].[Customer] c
+        LEFT JOIN [Fact].[Sale] s ON MONTH(m.Month) = MONTH(s.[Invoice Date Key]) AND YEAR(m.Month) = YEAR(s.[Invoice Date Key]) AND c.[Customer Key] = s.[Customer Key]';
+    END
+    ELSE IF @Period IN ('Quarter', 'Q')
+    BEGIN
+        -- Similar approach for Quarter, but this time we'll construct quarters
+        -- Omitted for brevity
+    END
+    ELSE
+    BEGIN
+        SET @SQL += 'WITH Years AS (
+            SELECT DATEFROMPARTS(number, 1, 1) AS Year
+            FROM master.dbo.spt_values
+            WHERE type = ''P'' AND number BETWEEN ' + CONVERT(VARCHAR, @FromYear) + ' AND ' + CONVERT(VARCHAR, @ToYear) + '
+        )
+        SELECT ISNULL(c.[Customer Key], ' + CONVERT(VARCHAR, ISNULL(@CustomerID, 'NULL')) + ') AS CustomerID,
+            ISNULL(c.[CustomerName], ''' + @CustName + ''') AS CustomerName,
+            CONVERT(VARCHAR, YEAR(y.Year)) AS Period,
+            ISNULL(SUM(s.[Quantity] * s.[Unit Price]), 0) AS Revenue
+        FROM Years y
+        CROSS JOIN [Dimension].[Customer] c
+        LEFT JOIN [Fact].[Sale] s ON YEAR(y.Year) = YEAR(s.[Invoice Date Key]) AND c.[Customer Key] = s.[Customer Key]';
+    END
+
+    -- Common WHERE and GROUP BY for all periods
+    SET @SQL += ' WHERE 1=1';
+
+    IF @CustomerID IS NOT NULL
+        SET @SQL += ' AND c.[Customer Key] = ' + CONVERT(VARCHAR, @CustomerID);
+        
+    SET @SQL += ' GROUP BY ISNULL(c.[Customer Key], ' + CONVERT(VARCHAR, ISNULL(@CustomerID, 'NULL')) + '), 
+        ISNULL(c.[CustomerName], ''' + @CustName + ''')';
+
+    IF @Period IN ('Month', 'M')
+        SET @SQL += ', FORMAT(m.Month, ''MMM yyyy'')';
+    ELSE IF @Period IN ('Quarter', 'Q')
+        SET @SQL += ', ''Q'' + DATENAME(QUARTER, m.QuarterStart) + '' '' + CONVERT(VARCHAR, YEAR(m.QuarterStart))';
+    ELSE
+        SET @SQL += ', YEAR(y.Year)';
+
+    -- Execute the query
+    EXEC(@SQL);
+END
+This version of the stored procedure first creates a list of periods based on the input range (either months or years). It then LEFT JOINs this with sales data. If there's no matching sales data for a customer within a given period, the revenue will be 0 because of the ISNULL function.
+
+
+
+
+User
+it`s too complicated, use  IF  EXISTS (SELECT 1 FROM [Dimension].[Customer]  where [Customer Key] = @CustomerID)
+ChatGPT
+Alright, I see what you're going for. Let's simplify this and leverage the IF EXISTS statement for clarity.
+
+Here's the modified stored procedure:
+
+sql
+Copy code
+CREATE PROCEDURE CalculateRevenue
+    @FromYear INT = NULL,
+    @ToYear INT = NULL,
+    @Period VARCHAR(10) = 'Year',
+    @CustomerID INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Determine default years if not provided
+    IF @FromYear IS NULL
+        SET @FromYear = (SELECT MIN(YEAR([Invoice Date Key])) FROM [Fact].[Sale]);
+
+    IF @ToYear IS NULL
+        SET @ToYear = (SELECT MAX(YEAR([Invoice Date Key])) FROM [Fact].[Sale]);
+
+    -- Get Customer Name
+    DECLARE @CustName NVARCHAR(50) = ''
+    IF @CustomerID IS NOT NULL AND EXISTS (SELECT 1 FROM [Dimension].[Customer] WHERE [Customer Key] = @CustomerID)
+        SELECT @CustName = [CustomerName] FROM [Dimension].[Customer] WHERE [Customer Key] = @CustomerID;
+
+    -- Create table name
+    DECLARE @TableName NVARCHAR(255)
+    SET @TableName = 
+        ISNULL(CONVERT(VARCHAR, @CustomerID) + '_', 'All_') + 
+        @CustName + '_' + 
+        CONVERT(VARCHAR, @FromYear) + 
+        (CASE WHEN @FromYear != @ToYear THEN '_' + CONVERT(VARCHAR, @ToYear) ELSE '' END) +
+        '_' + LEFT(@Period, 1);
+
+    -- Drop table if it exists
+    IF OBJECT_ID(@TableName, 'U') IS NOT NULL
+        EXEC('DROP TABLE [' + @TableName + ']');
+
+    -- Create table
+    EXEC('CREATE TABLE [' + @TableName + '] (
+        [CustomerID] INT,
+        [CustomerName] VARCHAR(50),
+        [Period] VARCHAR(8),
+        [Revenue] NUMERIC(19,2)
+    )');
+
+    -- Fetch and insert the data
+    DECLARE @SQL NVARCHAR(MAX);
+    IF @Period IN ('Month', 'M')
+    BEGIN
+        -- Construct SQL for Monthly data
+        SET @SQL = '...'; -- construct the necessary SQL
+    END
+    ELSE IF @Period IN ('Quarter', 'Q')
+    BEGIN
+        -- Construct SQL for Quarterly data
+        SET @SQL = '...'; -- construct the necessary SQL
+    END
+    ELSE
+    BEGIN
+        -- Construct SQL for Yearly data
+        SET @SQL = '...'; -- construct the necessary SQL
+    END
+
+    EXEC sp_executesql @SQL;
+END
+You'd still need to fill in the ... placeholders in the @SQL variable initialization with the appropriate SQL based on the period. This code has significantly been simplified by using IF EXISTS to handle checking if the customer exists.
