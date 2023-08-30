@@ -22,6 +22,7 @@ If stored procedure was executed for all customers, table name should contain pr
 
 8.	If no sales data is found for the specified customer within the given time period, the revenue should be set to zero.
 The table with customer data is called Dimension.Customer and has following columns : [Customer Key] as Primary Key and [Customer] as  [CustomerName]. The table for sales is called Fact.Sales and has columns: [Sale Key] as Primary Key, [Customer key] as Foreign key to Dimension.Customer table, [Quantity] and [Unit Price]
+
 ChatGPT
 To achieve the described functionality, you can follow the steps provided. Below is an implementation of the SQL stored procedure that meets the requirements:
 
@@ -514,3 +515,265 @@ BEGIN
     EXEC sp_executesql @SQL;
 END
 You'd still need to fill in the ... placeholders in the @SQL variable initialization with the appropriate SQL based on the period. This code has significantly been simplified by using IF EXISTS to handle checking if the customer exists.
+
+
+
+
+User
+i created this stored procedure CREATE PROCEDURE sp_CustomerRevenue
+    @FromYear INT = NULL,
+    @ToYear INT = NULL,
+    @Period VARCHAR(10) = 'Year',
+    @CustomerID INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Determine the default FromYear and ToYear if not provided
+     DECLARE @TableName NVARCHAR(255), @CustName NVARCHAR(50);
+    IF @CustomerID IS NULL
+        SET @TableName = 'All_';
+    ELSE
+    BEGIN
+        SELECT @CustName = [Customer]
+        FROM [Dimension].[Customer] 
+        WHERE [Customer Key] = @CustomerID;
+
+        IF @CustName IS NULL
+        BEGIN
+            SET @CustName = '';
+            SET @TableName = CONVERT(VARCHAR, @CustomerID) + '_';
+        END
+        ELSE
+            SET @TableName = CONVERT(VARCHAR, @CustomerID) + '_' + @CustName + '_';
+    END
+
+    SET @TableName += CONVERT(VARCHAR, @FromYear) 
+    + (CASE WHEN @FromYear != @ToYear THEN '_' + CONVERT(VARCHAR, @ToYear) ELSE '' END)
+    + '_' + LEFT(@Period, 1);
+select @FromYear, @ToYear, @TableName    
+    -- Drop the table if it exists
+    IF OBJECT_ID(@TableName, 'U') IS NOT NULL
+        EXEC('DROP TABLE [' + @TableName + ']');
+
+    -- Create the table
+    EXEC('CREATE TABLE [' + @TableName + '] (
+        [CustomerID] INT,
+        [CustomerName] VARCHAR(50),
+        [Period] VARCHAR(8),
+        [Revenue] NUMERIC(19,2)
+    )');
+	exec ('Select * from [' + @TableName +']')
+    -- Determine the period and insert the data
+    DECLARE @SQL NVARCHAR(MAX) = 
+    'INSERT INTO [' + @TableName + ']
+        SELECT
+            c.[Customer Key],
+            c.[Customer],
+            ';
+            
+    IF @Period IN ('Month', 'M')
+        SET @SQL += 'FORMAT(s.[Invoice Date Key], ''MMM yyyy''), ';
+    ELSE IF @Period IN ('Quarter', 'Q')
+        SET @SQL += '''Q'' + DATENAME(QUARTER, s.[Invoice Date Key]) + '' '' + CONVERT(VARCHAR, YEAR(s.[Invoice Date Key])), ';
+    ELSE
+        SET @SQL += 'CONVERT(VARCHAR, YEAR(s.[Invoice Date Key])), ';
+
+   set @SQL += 'ISNULL(SUM(s.[Quantity] * s.[Unit Price]), 0)
+        FROM [Dimension].[Customer] c
+        LEFT JOIN [Fact].[Sale] s ON c.[Customer Key] = s.[Customer Key]
+        WHERE YEAR(s.[Invoice Date Key]) BETWEEN ' + CONVERT(VARCHAR, @FromYear) + ' AND ' + CONVERT(VARCHAR, @ToYear);
+
+    IF @CustomerID IS NOT NULL
+        SET @SQL += ' AND c.[Customer Key] = ' + CONVERT(VARCHAR, @CustomerID);
+
+    SET @SQL += 
+    ' GROUP BY c.[Customer Key], c.[Customer], ';
+
+    IF @Period IN ('Month', 'M')
+        SET @SQL += 'FORMAT(s.[Invoice Date Key], ''MMM yyyy'')';
+    ELSE IF @Period IN ('Quarter', 'Q')
+        SET @SQL += '''Q'' + DATENAME(QUARTER, s.[Invoice Date Key]) + '' '' + CONVERT(VARCHAR, YEAR(s.[Invoice Date Key]))';
+    ELSE
+        SET @SQL += 'YEAR(s.[Invoice Date Key])';
+
+    -- Execute the query
+    EXEC(@SQL);
+
+END;
+ Add error handling and  provide appropriate error messages. Errors should be written to [ErrorLog] table, which should contain following columns:  
+
+[ErrorID] (int) 
+
+[ErrorNumber] (int) 
+
+[ErrorSeverity] (int) 
+
+[ErrorMessage] (varchar(255)) 
+
+[CustomerID] (int) 
+
+[Period] (varchar(8)) 
+
+[CreatedAt] (datetime) 
+
+The error table should be created during the first execution of stored procedure, so there should be the logic to check if error table already exists.  
+ChatGPT
+You can add error handling to your stored procedure using TRY...CATCH blocks. Inside the CATCH block, you can log the error details to an [ErrorLog] table. Below is a modified version of your stored procedure with error handling and appropriate error messages.
+
+sql
+Copy code
+CREATE PROCEDURE sp_CustomerRevenue
+    @FromYear INT = NULL,
+    @ToYear INT = NULL,
+    @Period VARCHAR(10) = 'Year',
+    @CustomerID INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Check if ErrorLog table exists, if not create it
+    IF OBJECT_ID('ErrorLog', 'U') IS NULL
+    BEGIN
+        CREATE TABLE [ErrorLog]
+        (
+            [ErrorID] INT PRIMARY KEY IDENTITY,
+            [ErrorNumber] INT,
+            [ErrorSeverity] INT,
+            [ErrorMessage] VARCHAR(255),
+            [CustomerID] INT,
+            [Period] VARCHAR(8),
+            [CreatedAt] DATETIME
+        );
+    END
+
+    BEGIN TRY
+        -- Your existing stored procedure code goes here
+        -- ...
+        -- ...
+
+    END TRY
+    BEGIN CATCH
+        -- Insert into ErrorLog table
+        INSERT INTO [ErrorLog]
+        (
+            [ErrorNumber],
+            [ErrorSeverity],
+            [ErrorMessage],
+            [CustomerID],
+            [Period],
+            [CreatedAt]
+        )
+        VALUES
+        (
+            ERROR_NUMBER(),
+            ERROR_SEVERITY(),
+            ERROR_MESSAGE(),
+            @CustomerID,
+            @Period,
+            GETDATE()
+        );
+        
+        -- Optionally, re-throw the error to notify the caller
+        THROW;
+    END CATCH
+END;
+In this modified version, the stored procedure starts by checking if the [ErrorLog] table exists. If not, it creates the table. Then, the procedure uses a TRY...CATCH block to wrap the existing code. If an error occurs, it will be caught by the CATCH block, and an entry will be made into the [ErrorLog] table with the relevant details, including the error number, severity, message, Customer ID, period, and the date/time of the error.
+
+Remember to place your original stored procedure code where the comment says -- Your existing stored procedure code goes here. This will ensure that any error that occurs during the execution will get caught and logged.
+
+
+
+
+User
+if  @CustomerID not exists in [Dimension].[Customer] table, insert into table one row with @CustomerID and Revenue =0 
+ChatGPT
+To handle the case where @CustomerID does not exist in the [Dimension].[Customer] table, you can add an additional IF NOT EXISTS check after you've created the result table. If @CustomerID doesn't exist, you can then insert a row into the result table with the given @CustomerID and a revenue of zero.
+
+Here is how you could modify your stored procedure to include this logic:
+
+sql
+Copy code
+CREATE PROCEDURE sp_CustomerRevenue
+    @FromYear INT = NULL,
+    @ToYear INT = NULL,
+    @Period VARCHAR(10) = 'Year',
+    @CustomerID INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Check if ErrorLog table exists, if not create it
+    IF OBJECT_ID('ErrorLog', 'U') IS NULL
+    BEGIN
+        CREATE TABLE [ErrorLog]
+        (
+            [ErrorID] INT PRIMARY KEY IDENTITY,
+            [ErrorNumber] INT,
+            [ErrorSeverity] INT,
+            [ErrorMessage] VARCHAR(255),
+            [CustomerID] INT,
+            [Period] VARCHAR(8),
+            [CreatedAt] DATETIME
+        );
+    END
+
+    BEGIN TRY
+        -- Your existing stored procedure code for table creation and data insertion
+        -- ...
+        -- ...
+
+        -- Check if the @CustomerID exists in [Dimension].[Customer]
+        IF @CustomerID IS NOT NULL AND NOT EXISTS (SELECT 1 FROM [Dimension].[Customer] WHERE [Customer Key] = @CustomerID)
+        BEGIN
+            -- Insert a row with the given @CustomerID and Revenue=0
+            EXEC('INSERT INTO [' + @TableName + '] ([CustomerID], [CustomerName], [Period], [Revenue]) VALUES (' + CONVERT(VARCHAR, @CustomerID) + ', '''', ''' + @Period + ''', 0)');
+        END
+
+    END TRY
+    BEGIN CATCH
+        -- Insert into ErrorLog table
+        INSERT INTO [ErrorLog]
+        (
+            [ErrorNumber],
+            [ErrorSeverity],
+            [ErrorMessage],
+            [CustomerID],
+            [Period],
+            [CreatedAt]
+        )
+        VALUES
+        (
+            ERROR_NUMBER(),
+            ERROR_SEVERITY(),
+            ERROR_MESSAGE(),
+            @CustomerID,
+            @Period,
+            GETDATE()
+        );
+
+        -- Optionally, re-throw the error to notify the caller
+        THROW;
+    END CATCH
+END;
+In this modified version, after your existing code for table creation and data insertion, there's a check to see if @CustomerID was provided and if it exists in the [Dimension].[Customer] table. If @CustomerID doesn't exist, a new row will be inserted into the result table with @CustomerID and a revenue of zero. This should meet your requirement.
+
+
+
+
+User
+Incorrect syntax near the keyword 'CONVERT'
+ChatGPT
+I apologize for the oversight. The CONVERT function cannot be used directly within the EXEC statement like that. You'll have to use a variable to hold the SQL string first and then execute it. Here's how you could adjust that part:
+
+sql
+Copy code
+DECLARE @InsertSQL NVARCHAR(MAX);
+-- ...
+-- ...
+IF @CustomerID IS NOT NULL AND NOT EXISTS (SELECT 1 FROM [Dimension].[Customer] WHERE [Customer Key] = @CustomerID)
+BEGIN
+    SET @InsertSQL = 'INSERT INTO [' + @TableName + '] ([CustomerID], [CustomerName], [Period], [Revenue]) VALUES (' + CONVERT(VARCHAR, @CustomerID) + ', '''', ''' + @Period + ''', 0)';
+    EXEC (@InsertSQL);
+END
+This way, you build up the SQL statement for insertion in a separate variable (@InsertSQL) and then execute it. This should resolve the "Incorrect syntax near the keyword 'CONVERT'" error.
